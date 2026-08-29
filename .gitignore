@@ -9,6 +9,10 @@ PROGRESS.md
 .agent/
 .local/
 
+# Planning / working docs — keep LOCAL, not needed for build or judges
+docs/
+*.plan.md
+
 # Logs
 *.log
 
