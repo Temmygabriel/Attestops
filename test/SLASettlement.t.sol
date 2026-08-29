@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {Test, console} from "forge-std/Test.sol";
+import {SLASettlement} from "../contracts/creditcoin/SLASettlement.sol";
+
+contract SLASettlementTest is Test {
+    SLASettlement internal settle;
+    address internal owner = address(this);
+    address internal operator = address(0xA11CE);
+    address internal emitter = address(0x5EED); // the source ServiceRegistry
+    address internal impostor = address(0xBEEF);
+
+    bytes32 internal slaId = keccak256("SLA-014");
+    bytes32 internal deviceId = keccak256("NODE-014");
+
+    function setUp() public {
+        settle = new SLASettlement();
+        settle.registerSourceEmitter(emitter);
+    }
+
+    // ---- registerSourceEmitter ----
+
+    function test_registerEmitter_byOwner() public {
+        address newEmitter = address(0xCAFE);
+        vm.expectEmit(true, true, false, true);
+        emit SLASettlement.SourceEmitterRegistered(newEmitter, owner);
+        settle.registerSourceEmitter(newEmitter);
+        assertTrue(settle.registeredEmitters(newEmitter));
+    }
+
+    function test_registerEmitter_nonOwner_reverts() public {
+        vm.prank(impostor);
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.OnlyOwner.selector, impostor));
+        settle.registerSourceEmitter(address(0xCAFE));
+    }
+
+    // ---- createSLA ----
+
+    function test_createSLA_valid() public {
+        vm.deal(operator, 100 ether);
+        vm.startPrank(operator);
+        settle.createSLA{value: 100 ether}(
+            slaId, deviceId, emitter, 10, 9800, 40 ether
+        );
+        vm.stopPrank();
+
+        SLASettlement.SLA memory sla = settle.getSLA(slaId);
+        assertEq(sla.operator, operator);
+        assertEq(sla.deviceId, deviceId);
+        assertEq(sla.sourceEmitter, emitter);
+        assertEq(sla.requiredWindows, 10);
+        assertEq(sla.minimumUptimeBps, 9800);
+        assertEq(sla.reward, 40 ether);
+        assertEq(sla.collateral, 100 ether);
+        assertEq(sla.verifiedWindows, 0);
+        assertEq(sla.lastVerifiedWindow, 0);
+        assertFalse(sla.settled);
+    }
+
+    function test_createSLA_emitsEvent() public {
+        vm.deal(operator, 100 ether);
+        vm.expectEmit(true, true, true, true);
+        emit SLASettlement.SLACreated(
+            slaId, operator, deviceId, emitter, 10, 9800, 40 ether, 100 ether
+        );
+        vm.prank(operator);
+        settle.createSLA{value: 100 ether}(slaId, deviceId, emitter, 10, 9800, 40 ether);
+    }
+
+    function test_createSLA_unregisteredEmitter_reverts() public {
+        address badEmitter = address(0xBAD);
+        vm.deal(operator, 100 ether);
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.EmitterNotRegistered.selector, badEmitter));
+        vm.prank(operator);
+        settle.createSLA{value: 100 ether}(slaId, deviceId, badEmitter, 10, 9800, 40 ether);
+    }
+
+    function test_createSLA_duplicate_reverts() public {
+        vm.deal(operator, 200 ether);
+        vm.startPrank(operator);
+        settle.createSLA{value: 100 ether}(slaId, deviceId, emitter, 10, 9800, 40 ether);
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.SlaAlreadyExists.selector, slaId));
+        settle.createSLA{value: 100 ether}(slaId, deviceId, emitter, 10, 9800, 40 ether);
+        vm.stopPrank();
+    }
+
+    function test_createSLA_zeroCollateral_reverts() public {
+        vm.expectRevert(SLASettlement.ZeroCollateral.selector);
+        vm.prank(operator);
+        settle.createSLA{value: 0}(slaId, deviceId, emitter, 10, 9800, 40 ether);
+    }
+
+    function test_createSLA_zeroRequiredWindows_reverts() public {
+        vm.deal(operator, 100 ether);
+        vm.expectRevert(SLASettlement.RequiredWindowsZero.selector);
+        vm.prank(operator);
+        settle.createSLA{value: 100 ether}(slaId, deviceId, emitter, 0, 9800, 40 ether);
+    }
+
+    function test_createSLA_badUptime_reverts() public {
+        vm.deal(operator, 100 ether);
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.UptimeOutOfRange.selector, 10_001));
+        vm.prank(operator);
+        settle.createSLA{value: 100 ether}(slaId, deviceId, emitter, 10, 10_001, 40 ether);
+    }
+
+    function test_createSLA_contractHoldsCollateral() public {
+        vm.deal(operator, 100 ether);
+        vm.prank(operator);
+        settle.createSLA{value: 100 ether}(slaId, deviceId, emitter, 10, 9800, 40 ether);
+
+        assertEq(address(settle).balance, 100 ether);
+    }
+}
