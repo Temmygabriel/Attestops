@@ -1,0 +1,38 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Claude / agent memory + progress — NEVER push
+PROGRESS.md
+.claude/
+.agent/
+.local/
+
+# Logs
+*.log
+
+# Node / frontend
+node_modules/
+dist/
+coverage/
+.vite/
+out/
+build/
+
+# Foundry
+lib/
+cache/
+broadcast/
+artifacts/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Temp
+tmp/
+temp/
+*.tmp
