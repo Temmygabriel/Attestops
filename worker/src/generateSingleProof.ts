@@ -11,8 +11,9 @@
 //
 import dotenv from 'dotenv';
 import { JsonRpcProvider } from 'ethers';
-import { proofProvider, chainInfo, blockProver } from '@gluwa/usc-sdk';
+import { chainInfo, blockProver } from '@gluwa/usc-sdk';
 import { loadConfig, envPath } from './env';
+import { makeProofBuilder, waitForAttestationResilient } from './attest';
 
 dotenv.config({ path: envPath(), override: true });
 
@@ -37,14 +38,12 @@ async function main(): Promise<void> {
   if (!tx.blockNumber) throw new Error(`Transaction ${txHash} is not yet mined`);
   console.log(`[1/5] Found tx in source block #${tx.blockNumber}`);
 
-  // 2. Wait for that block to be attested on Creditcoin (up to 20 min; usually ~8 min).
-  const proofBuilder = new proofProvider.service.ProofBuilder(cfg.sourceChainKey, cfg.proofBuilderUrl);
+  // 2. Wait for that block to be attested on Creditcoin (resilient: retries transient prover errors).
+  const proofBuilder = makeProofBuilder(cfg.sourceChainKey, cfg.proofBuilderUrl);
   const info = new chainInfo.PrecompileChainInfoProvider(ccProvider);
-  const latest = await info.getLatestAttestedHeightAndHash(cfg.sourceChainKey);
-  console.log(`[2/5] Latest attested height for chain key ${cfg.sourceChainKey}: ${latest.height}`);
-  console.log(`[2/5] Waiting for block ${tx.blockNumber} attestation (poll 15s, timeout 20m)...`);
+  console.log(`[2/5] Waiting for block ${tx.blockNumber} attestation...`);
 
-  await proofBuilder.waitUntilHeightAttested(cfg.sourceChainKey, tx.blockNumber, 15_000, 1_200_000);
+  await waitForAttestationResilient(proofBuilder, info, cfg.sourceChainKey, tx.blockNumber);
 
   console.log(`[3/5] Block ${tx.blockNumber} attested!`);
 

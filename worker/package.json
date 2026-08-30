@@ -5,6 +5,7 @@
   "description": "AttestOps off-chain worker: reads source-chain service events, generates Attestcoin proofs, verifies them against the Creditcoin block prover.",
   "scripts": {
     "proof:single": "tsx src/generateSingleProof.ts",
+    "proof:batch": "tsx src/generateBatchProof.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
