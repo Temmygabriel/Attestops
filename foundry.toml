@@ -6,6 +6,7 @@ solc_version = "0.8.24"
 optimizer = true
 optimizer_runs = 200
 evm_version = "cancun"
+via_ir = true
 
 # Source chain (e.g. Sepolia) and Creditcoin testnet RPCs
 [rpc_endpoints]

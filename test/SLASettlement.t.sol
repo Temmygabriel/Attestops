@@ -1,37 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test, console} from "forge-std/Test.sol";
 import {SLASettlement} from "../contracts/creditcoin/SLASettlement.sol";
+import {SettlementTestBase} from "./SettlementTestBase.sol";
 
-contract SLASettlementTest is Test {
-    SLASettlement internal settle;
-    address internal owner = address(this);
-    address internal operator = address(0xA11CE);
-    address internal emitter = address(0x5EED); // the source ServiceRegistry
-    address internal impostor = address(0xBEEF);
-
-    bytes32 internal slaId = keccak256("SLA-014");
-    bytes32 internal deviceId = keccak256("NODE-014");
-
-    uint256 internal collateral = 100 ether;
-    uint256 internal reward = 40 ether;
-
-    // ---- helpers ----
-
-    function _createSLA() internal {
-        vm.deal(operator, collateral + reward);
-        vm.prank(operator);
-        settle.createSLA{value: collateral + reward}(
-            slaId, deviceId, emitter, 10, 9800, collateral, reward
-        );
-    }
-
-    function setUp() public {
-        settle = new SLASettlement();
-        settle.registerSourceEmitter(emitter);
-    }
-
+/// @dev SLA lifecycle tests (emitter registry + createSLA). Proof-path validation lives
+///      in SettlementValidation.t.sol.
+contract SLASettlementTest is SettlementTestBase {
     // ---- registerSourceEmitter ----
 
     function test_registerEmitter_byOwner() public {
@@ -129,5 +104,20 @@ contract SLASettlementTest is Test {
     function test_createSLA_contractHoldsFunds() public {
         _createSLA();
         assertEq(address(settle).balance, collateral + reward);
+    }
+
+    // ---- Proof gate smoke ----
+
+    function test_provenWindow_advancesSLA() public {
+        _createSLA(3);
+        _submitWindow(0, 9900);
+        assertEq(settle.getSLA(slaId).verifiedWindows, 1);
+    }
+
+    function test_unprovenSubmission_reverts() public {
+        _createSLA(3);
+        _setProver(PROVER_FALSE);
+        vm.expectRevert(SLASettlement.ProofVerificationFailed.selector);
+        _submitWindow(0, 9900);
     }
 }

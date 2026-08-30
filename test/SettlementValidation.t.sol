@@ -1,147 +1,207 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-import {Test, console} from "forge-std/Test.sol";
-import {SLASettlement} from "../contracts/creditcoin/SLASettlement.sol";
+import {SLASettlement, IBlockProver} from "../contracts/creditcoin/SLASettlement.sol";
+import {SettlementTestBase} from "./SettlementTestBase.sol";
 
-/// @dev Day 4: deterministic validation acceptance tests (brief §26).
-contract SettlementValidationTest is Test {
-    SLASettlement internal settle;
-    address internal owner = address(this);
-    address internal operator = address(0xA11CE);
-    address internal emitter = address(0x5EED);
-    address internal wrongEmitter = address(0xBEEF);
+/// @dev Day 7: proof-gated validation acceptance tests (brief §26). Every fact is decoded
+///      from a proven txBytes, so these exercise the full path: proof verify → decode →
+///      deterministic checks. A mock Block Prover precompile at 0x0FD2 stands in for the
+///      real Creditcoin precompile.
+contract SettlementValidationTest is SettlementTestBase {
+    // ---- Proof gate (Day 7) ----
 
-    bytes32 internal slaId = keccak256("SLA-014");
-    bytes32 internal deviceId = keccak256("NODE-014");
-    bytes32 internal otherDevice = keccak256("NODE-999");
-
-    uint256 internal collateral = 100 ether;
-    uint256 internal reward = 40 ether;
-    uint256 internal minUptime = 9800; // 98.00%
-
-    function setUp() public {
-        settle = new SLASettlement();
-        settle.registerSourceEmitter(emitter);
-        vm.deal(operator, 10_000 ether);
+    function test_verifiedProof_accepted() public {
+        _createSLA(3);
+        _submitWindow(0, 9900);
+        assertEq(settle.getSLA(slaId).verifiedWindows, 1);
     }
 
-    // ---- helpers ----
-
-    function _createSLA(uint256 requiredWindows) internal {
-        vm.prank(operator);
-        settle.createSLA{value: collateral + reward}(
-            slaId, deviceId, emitter, requiredWindows, minUptime, collateral, reward
-        );
+    function test_invalidProof_reverts() public {
+        _createSLA(3);
+        _setProver(PROVER_FALSE);
+        vm.expectRevert(SLASettlement.ProofVerificationFailed.selector);
+        _submitWindow(0, 9900);
     }
 
-    function _fact(
-        uint256 windowId,
-        uint256 uptimeBps,
-        bytes32 txHash,
-        bytes32 _deviceId,
-        address _emitter
-    ) internal pure returns (SLASettlement.ServiceFact memory) {
-        return SLASettlement.ServiceFact({
-            sourceTxHash: txHash,
-            deviceId: _deviceId,
-            emitter: _emitter,
-            windowId: windowId,
-            uptimeBps: uptimeBps
-        });
+    function test_precompileRevert_reverts() public {
+        _createSLA(3);
+        _setProver(PROVER_REVERT);
+        vm.expectRevert(SLASettlement.ProofVerificationFailed.selector);
+        _submitWindow(0, 9900);
     }
 
-    function _submitSingle(uint256 windowId, uint256 uptimeBps, uint256 txNonce) internal {
-        SLASettlement.ServiceFact[] memory facts = new SLASettlement.ServiceFact[](1);
-        facts[0] = _fact(
-            windowId, uptimeBps, keccak256(abi.encodePacked("tx", txNonce)), deviceId, emitter
-        );
-        settle.submitVerifiedBatch(slaId, facts);
+    function test_wrongChainKey_reverts() public {
+        _createSLA(3);
+        bytes memory tb = _buildTxBytes(emitter, deviceId, 0, 9900, 1);
+        bytes[] memory txs = new bytes[](1);
+        txs[0] = tb;
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.WrongChainKey.selector, uint64(2)));
+        settle.submitProvenBatch(slaId, 2, _heightsFor(1), txs, _proofsFor(1), _continuity());
+    }
+
+    function test_lengthMismatch_reverts() public {
+        _createSLA(3);
+        bytes memory tb = _buildTxBytes(emitter, deviceId, 0, 9900, 1);
+        bytes[] memory txs = new bytes[](1);
+        txs[0] = tb;
+        vm.expectRevert(SLASettlement.LengthMismatch.selector);
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(2), txs, _proofsFor(1), _continuity());
+    }
+
+    // ---- Decode layer (Day 7) ----
+
+    function test_revertedSourceTx_reverts() public {
+        _createSLA(3);
+        bytes memory tb = _buildTxBytes(emitter, deviceId, 0, 9900, 0); // receipt status 0
+        bytes[] memory txs = new bytes[](1);
+        txs[0] = tb;
+        vm.expectRevert(SLASettlement.TxReverted.selector);
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(1), txs, _proofsFor(1), _continuity());
+    }
+
+    function test_noServiceWindowClosed_reverts() public {
+        _createSLA(3);
+        bytes32[] memory topics = new bytes32[](1);
+        topics[0] = keccak256("SomeOtherEvent()");
+        SLASettlement.Log[] memory logs = new SLASettlement.Log[](1);
+        logs[0] = SLASettlement.Log({emitter: emitter, topics: topics, data: bytes("")});
+        bytes memory tb = _buildTxBytesWithLogs(logs, 1);
+        bytes[] memory txs = new bytes[](1);
+        txs[0] = tb;
+        vm.expectRevert(SLASettlement.NoServiceWindowClosed.selector);
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(1), txs, _proofsFor(1), _continuity());
+    }
+
+    function test_multipleServiceWindows_reverts() public {
+        _createSLA(3);
+        SLASettlement.Log[] memory logs = new SLASettlement.Log[](2);
+        logs[0] = _swcLog(emitter, deviceId, 0, 9900);
+        logs[1] = _swcLog(emitter, deviceId, 1, 9900);
+        bytes memory tb = _buildTxBytesWithLogs(logs, 1);
+        bytes[] memory txs = new bytes[](1);
+        txs[0] = tb;
+        vm.expectRevert(SLASettlement.MultipleServiceWindows.selector);
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(1), txs, _proofsFor(1), _continuity());
+    }
+
+    function test_malformedTxBytes_reverts() public {
+        _createSLA(3);
+        bytes[] memory txs = new bytes[](1);
+        txs[0] = abi.encode(uint8(2), new bytes[](0)); // valid ABI but zero chunks
+        vm.expectRevert(SLASettlement.MalformedTxBytes.selector);
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(1), txs, _proofsFor(1), _continuity());
     }
 
     // ---- Emitter match (brief §26) ----
 
     function test_emitter_registered_accepted() public {
         _createSLA(3);
-        _submitSingle(0, 9900, 1);
+        _submitWindow(0, 9900);
         assertEq(settle.getSLA(slaId).verifiedWindows, 1);
     }
 
     function test_emitter_unknown_reverts() public {
         _createSLA(3);
-        SLASettlement.ServiceFact[] memory facts = new SLASettlement.ServiceFact[](1);
-        facts[0] = _fact(0, 9900, keccak256("tx1"), deviceId, wrongEmitter);
-
+        bytes memory tb = _buildTxBytes(wrongEmitter, deviceId, 0, 9900, 1);
+        bytes[] memory txs = new bytes[](1);
+        txs[0] = tb;
         vm.expectRevert(abi.encodeWithSelector(SLASettlement.WrongEmitter.selector, slaId, wrongEmitter));
-        settle.submitVerifiedBatch(slaId, facts);
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(1), txs, _proofsFor(1), _continuity());
     }
 
     // ---- Device binding (brief §26) ----
 
     function test_device_match_accepted() public {
         _createSLA(3);
-        _submitSingle(0, 9900, 1);
+        _submitWindow(0, 9900);
         assertEq(settle.getSLA(slaId).verifiedWindows, 1);
     }
 
     function test_device_mismatch_reverts() public {
         _createSLA(3);
-        SLASettlement.ServiceFact[] memory facts = new SLASettlement.ServiceFact[](1);
-        facts[0] = _fact(0, 9900, keccak256("tx1"), otherDevice, emitter);
-
+        bytes memory tb = _buildTxBytes(emitter, otherDevice, 0, 9900, 1);
+        bytes[] memory txs = new bytes[](1);
+        txs[0] = tb;
         vm.expectRevert(abi.encodeWithSelector(SLASettlement.WrongDevice.selector, slaId, otherDevice));
-        settle.submitVerifiedBatch(slaId, facts);
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(1), txs, _proofsFor(1), _continuity());
     }
 
     // ---- Ordering (brief §26) ----
 
     function test_order_1_2_3_accepted() public {
         _createSLA(3);
-        _submitSingle(0, 9900, 1);
-        _submitSingle(1, 9900, 2);
-        _submitSingle(2, 9900, 3);
+        _submitWindow(0, 9900);
+        _submitWindow(1, 9900);
+        _submitWindow(2, 9900);
         assertEq(settle.getSLA(slaId).verifiedWindows, 3);
     }
 
     function test_order_1_3_reverts() public {
         _createSLA(3);
-        _submitSingle(0, 9900, 1);
+        _submitWindow(0, 9900);
         vm.expectRevert(abi.encodeWithSelector(SLASettlement.OutOfOrder.selector, slaId, 2, 1));
-        _submitSingle(2, 9900, 2);
+        _submitWindow(2, 9900);
     }
 
     function test_order_3_2_reverts() public {
         _createSLA(3);
         vm.expectRevert(abi.encodeWithSelector(SLASettlement.OutOfOrder.selector, slaId, 2, 0));
-        _submitSingle(2, 9900, 1); // first fact must be window 0
+        _submitWindow(2, 9900); // first fact must be window 0
     }
 
-    // ---- Replay (brief §26) ----
-
-    function test_replay_sameTxTwice_reverts() public {
+    function test_outOfOrder_insideBatch_reverts() public {
         _createSLA(3);
-        SLASettlement.ServiceFact[] memory f1 = new SLASettlement.ServiceFact[](1);
-        f1[0] = _fact(0, 9900, keccak256("txReplay"), deviceId, emitter);
-        settle.submitVerifiedBatch(slaId, f1);
+        bytes[] memory txs = new bytes[](2);
+        txs[0] = _buildTxBytes(emitter, deviceId, 0, 9900, 1);
+        txs[1] = _buildTxBytes(emitter, deviceId, 2, 9900, 1); // window 2 while 1 expected
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.OutOfOrder.selector, slaId, 2, 1));
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(2), txs, _proofsFor(2), _continuity());
+    }
 
-        // Same tx hash again -> replay.
-        SLASettlement.ServiceFact[] memory f2 = new SLASettlement.ServiceFact[](1);
-        f2[0] = _fact(1, 9900, keccak256("txReplay"), deviceId, emitter);
-        vm.expectRevert(abi.encodeWithSelector(SLASettlement.ReplayDetected.selector, slaId, keccak256("txReplay")));
-        settle.submitVerifiedBatch(slaId, f2);
+    // ---- Replay protection (brief §26) ----
+
+    /// @dev Re-submitting a consumed tx is rejected. Under strict ordering the duplicate
+    ///      tx decodes to the already-applied window, so it is caught by the ordering
+    ///      rule (defense in depth for future gap-tolerant ordering).
+    function test_resubmitConsumedTx_reverts() public {
+        _createSLA(3);
+        _submitWindow(0, 9900);
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.OutOfOrder.selector, slaId, 0, 1));
+        _submitWindow(0, 9900);
+    }
+
+    /// @dev The same proven window cannot be double-counted across two SLAs on the same
+    ///      device — the consumed-tx map rejects it (ReplayDetected).
+    function test_replay_acrossSlas_reverts() public {
+        _createSLA(3); // SLA-014 for NODE-014
+        _submitWindow(0, 9900); // consumes the window-0 tx
+
+        bytes32 slaId2 = keccak256("SLA-999");
+        vm.deal(operator, collateral + reward);
+        vm.prank(operator);
+        settle.createSLA{value: collateral + reward}(
+            slaId2, deviceId, emitter, 3, minUptime, collateral, reward
+        );
+
+        bytes memory tb = _buildTxBytes(emitter, deviceId, 0, 9900, 1);
+        bytes[] memory txs = new bytes[](1);
+        txs[0] = tb;
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.ReplayDetected.selector, slaId2, keccak256(tb)));
+        settle.submitProvenBatch(slaId2, CHAIN_KEY, _heightsFor(1), txs, _proofsFor(1), _continuity());
     }
 
     // ---- Threshold (brief §26) ----
 
     function test_threshold_exact_pass() public {
         _createSLA(3);
-        _submitSingle(0, 9800, 1); // 9800 >= 9800 -> pass
+        _submitWindow(0, 9800); // 9800 >= 9800 -> pass
         assertEq(settle.getSLA(slaId).passedWindows, 1);
     }
 
     function test_threshold_below_failsButCounts() public {
         _createSLA(3);
-        _submitSingle(0, 9799, 1); // 9799 < 9800 -> counts but fails
+        _submitWindow(0, 9799); // 9799 < 9800 -> counts but fails
         assertEq(settle.getSLA(slaId).verifiedWindows, 1);
         assertEq(settle.getSLA(slaId).passedWindows, 0);
     }
@@ -151,18 +211,16 @@ contract SettlementValidationTest is Test {
     function test_completion_9of10_cannotSettle() public {
         _createSLA(10);
         for (uint256 i = 0; i < 9; ++i) {
-            _submitSingle(i, 9900, i + 1);
+            _submitWindow(i, 9900);
         }
-        vm.expectRevert(
-            abi.encodeWithSelector(SLASettlement.IncompleteHistory.selector, slaId, 9, 10)
-        );
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.IncompleteHistory.selector, slaId, 9, 10));
         settle.settle(slaId);
     }
 
     function test_completion_10of10_canSettle() public {
         _createSLA(10);
         for (uint256 i = 0; i < 10; ++i) {
-            _submitSingle(i, 9900, i + 1);
+            _submitWindow(i, 9900);
         }
         settle.settle(slaId);
         assertEq(settle.getSLA(slaId).settled, true);
@@ -174,7 +232,7 @@ contract SettlementValidationTest is Test {
     function test_settle_full_paysRewardPlusCollateral() public {
         _createSLA(10);
         for (uint256 i = 0; i < 10; ++i) {
-            _submitSingle(i, 9900, i + 1);
+            _submitWindow(i, 9900);
         }
 
         uint256 operatorBefore = operator.balance;
@@ -191,7 +249,7 @@ contract SettlementValidationTest is Test {
         _createSLA(10);
         // 8 pass, 2 fail (window 5 and 8 below threshold)
         for (uint256 i = 0; i < 10; ++i) {
-            _submitSingle(i, i == 5 || i == 8 ? 5000 : 9900, i + 1);
+            _submitWindow(i, i == 5 || i == 8 ? 5000 : 9900);
         }
 
         uint256 operatorBefore = operator.balance;
@@ -207,18 +265,18 @@ contract SettlementValidationTest is Test {
     function test_submitAfterSettle_reverts() public {
         _createSLA(3);
         for (uint256 i = 0; i < 3; ++i) {
-            _submitSingle(i, 9900, i + 1);
+            _submitWindow(i, 9900);
         }
         settle.settle(slaId);
 
         vm.expectRevert(abi.encodeWithSelector(SLASettlement.SlaAlreadySettled.selector, slaId));
-        _submitSingle(3, 9900, 99);
+        _submitWindow(3, 9900);
     }
 
     function test_settleTwice_reverts() public {
         _createSLA(3);
         for (uint256 i = 0; i < 3; ++i) {
-            _submitSingle(i, 9900, i + 1);
+            _submitWindow(i, 9900);
         }
         settle.settle(slaId);
 
@@ -230,21 +288,20 @@ contract SettlementValidationTest is Test {
 
     function test_emptyBatch_reverts() public {
         _createSLA(3);
-        SLASettlement.ServiceFact[] memory facts = new SLASettlement.ServiceFact[](0);
+        bytes[] memory txs = new bytes[](0);
         vm.expectRevert(SLASettlement.EmptyBatch.selector);
-        settle.submitVerifiedBatch(slaId, facts);
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(0), txs, _proofsFor(0), _continuity());
     }
 
     // ---- Batch submission ----
 
     function test_batch_multiFact_accepted() public {
         _createSLA(3);
-        SLASettlement.ServiceFact[] memory facts = new SLASettlement.ServiceFact[](3);
-        facts[0] = _fact(0, 9900, keccak256("b1"), deviceId, emitter);
-        facts[1] = _fact(1, 9900, keccak256("b2"), deviceId, emitter);
-        facts[2] = _fact(2, 9900, keccak256("b3"), deviceId, emitter);
-        settle.submitVerifiedBatch(slaId, facts);
-
+        uint256[] memory ups = new uint256[](3);
+        ups[0] = 9900;
+        ups[1] = 9900;
+        ups[2] = 9900;
+        _submitBatch(3, ups);
         assertEq(settle.getSLA(slaId).verifiedWindows, 3);
     }
 
@@ -252,7 +309,7 @@ contract SettlementValidationTest is Test {
 
     function test_slash_ownerSeizesUnfinishedSLA() public {
         _createSLA(10);
-        _submitSingle(0, 9900, 1); // never completes
+        _submitWindow(0, 9900); // never completes
 
         uint256 ownerBefore = owner.balance;
         settle.slash(slaId);
@@ -263,15 +320,8 @@ contract SettlementValidationTest is Test {
 
     function test_slash_nonOwner_reverts() public {
         _createSLA(10);
-        vm.prank(impostor());
-        vm.expectRevert(abi.encodeWithSelector(SLASettlement.OnlyOwner.selector, impostor()));
+        vm.prank(impostor);
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.OnlyOwner.selector, impostor));
         settle.slash(slaId);
     }
-
-    function impostor() internal pure returns (address) {
-        return address(0xBEEF);
-    }
-
-    // Allow the test contract (owner) to receive seized slash funds.
-    receive() external payable {}
 }
