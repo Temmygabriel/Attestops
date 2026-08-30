@@ -1,0 +1,20 @@
+{
+  "name": "attestops-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AttestOps off-chain worker: reads source-chain service events, generates Attestcoin proofs, verifies them against the Creditcoin block prover.",
+  "scripts": {
+    "proof:single": "tsx src/generateSingleProof.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@gluwa/usc-sdk": "0.18.0",
+    "dotenv": "17.4.2",
+    "ethers": "^6.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.22.4",
+    "typescript": "^5.6.0"
+  }
+}
