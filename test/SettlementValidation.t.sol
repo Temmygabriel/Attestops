@@ -324,4 +324,94 @@ contract SettlementValidationTest is SettlementTestBase {
         vm.expectRevert(abi.encodeWithSelector(SLASettlement.OnlyOwner.selector, impostor));
         settle.slash(slaId);
     }
+
+    // ---- Adversarial hardening (Day 9) ----
+
+    /// @dev The whole batch is atomic: if ANY fact fails, NO state advances.
+    function test_batch_atomic_noPartialApplication() public {
+        _createSLA(3);
+        bytes[] memory txs = new bytes[](2);
+        txs[0] = _buildTxBytes(emitter, deviceId, 0, 9900, 1); // would pass on its own
+        txs[1] = _buildTxBytes(emitter, otherDevice, 1, 9900, 1); // wrong device — fails
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.WrongDevice.selector, slaId, otherDevice));
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(2), txs, _proofsFor(2), _continuity());
+        // No partial application of window 0.
+        assertEq(settle.getSLA(slaId).verifiedWindows, 0);
+        assertEq(settle.getSLA(slaId).passedWindows, 0);
+    }
+
+    /// @dev Two facts in one batch claiming the same window (different uptimes, so the
+    ///      txBytes differ) — the second is out of order.
+    function test_duplicateWindow_insideBatch_reverts() public {
+        _createSLA(3);
+        bytes[] memory txs = new bytes[](2);
+        txs[0] = _buildTxBytes(emitter, deviceId, 0, 9900, 1);
+        txs[1] = _buildTxBytes(emitter, deviceId, 0, 5000, 1); // duplicate window 0
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.OutOfOrder.selector, slaId, 0, 1));
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(2), txs, _proofsFor(2), _continuity());
+    }
+
+    /// @dev Identical txBytes twice in one batch is rejected (ordering catches it before
+    ///      the replay map — defense in depth).
+    function test_identicalTxBytes_twiceInBatch_reverts() public {
+        _createSLA(3);
+        bytes memory tb = _buildTxBytes(emitter, deviceId, 0, 9900, 1);
+        bytes[] memory txs = new bytes[](2);
+        txs[0] = tb;
+        txs[1] = tb;
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.OutOfOrder.selector, slaId, 0, 1));
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(2), txs, _proofsFor(2), _continuity());
+    }
+
+    /// @dev All windows below threshold -> zero payout, Partial outcome, SLA closed.
+    function test_settle_zeroPass_scalesToZero() public {
+        _createSLA(3);
+        for (uint256 i = 0; i < 3; ++i) {
+            _submitWindow(i, 1000); // all far below the 9800 minimum
+        }
+        uint256 operatorBefore = operator.balance;
+        settle.settle(slaId);
+        assertEq(operator.balance - operatorBefore, 0);
+        assertEq(uint256(settle.outcomes(slaId)), uint256(SLASettlement.Outcome.Partial));
+        assertEq(settle.getSLA(slaId).settled, true);
+    }
+
+    /// @dev A proven SWC log whose data is not (uint256,uint256) aborts the decode — no
+    ///      malformed facts can be smuggled in even with a valid-looking proof.
+    function test_malformedLogData_reverts() public {
+        _createSLA(3);
+        bytes32[] memory topics = new bytes32[](3);
+        topics[0] = keccak256("ServiceWindowClosed(bytes32,uint256,uint256,uint256)");
+        topics[1] = deviceId;
+        topics[2] = bytes32(uint256(0));
+        SLASettlement.Log[] memory logs = new SLASettlement.Log[](1);
+        logs[0] = SLASettlement.Log({emitter: emitter, topics: topics, data: hex"deadbeef"});
+        bytes memory tb = _buildTxBytesWithLogs(logs, 1);
+        bytes[] memory txs = new bytes[](1);
+        txs[0] = tb;
+        vm.expectRevert(); // abi.decode panics — no way to inject a malformed fact
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(1), txs, _proofsFor(1), _continuity());
+        assertEq(settle.getSLA(slaId).verifiedWindows, 0);
+    }
+
+    /// @dev Submitting to an unknown SLA id is rejected up front.
+    function test_submitUnknownSla_reverts() public {
+        bytes memory tb = _buildTxBytes(emitter, deviceId, 0, 9900, 1);
+        bytes[] memory txs = new bytes[](1);
+        txs[0] = tb;
+        bytes32 unknown = keccak256("NOPE");
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.SlaNotFound.selector, unknown));
+        settle.submitProvenBatch(unknown, CHAIN_KEY, _heightsFor(1), txs, _proofsFor(1), _continuity());
+    }
+
+    /// @dev Submitting once the SLA is already complete is rejected.
+    function test_submitAfterComplete_reverts() public {
+        _createSLA(1);
+        _submitWindow(0, 9900);
+        bytes memory tb = _buildTxBytes(emitter, deviceId, 1, 9900, 1);
+        bytes[] memory txs = new bytes[](1);
+        txs[0] = tb;
+        vm.expectRevert(abi.encodeWithSelector(SLASettlement.SlaAlreadyComplete.selector, slaId));
+        settle.submitProvenBatch(slaId, CHAIN_KEY, _heightsFor(1), txs, _proofsFor(1), _continuity());
+    }
 }
