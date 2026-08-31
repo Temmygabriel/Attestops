@@ -1,0 +1,13 @@
+{
+  "name": "attestops",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "operator": "node --experimental-strip-types api/operator.ts"
+  },
+  "dependencies": {
+    "@gluwa/usc-sdk": "0.18.0",
+    "ethers": "^6.17.0"
+  }
+}

@@ -515,12 +515,47 @@ const SETTLER_ABI = [
 ];
 
 const DEVICE_NAMES = {
+  '0x4346f6bcde52779e60d0cba2808558c173f47e10545e5ad50f4e32a19d2eebff': 'NODE-010',
   '0x025c01e087c57af0174f8f75090f0ba0e03a03f01a33ce086db83c99d3d01c8a': 'NODE-015',
   '0xc2e5efbdd65b5cc9668157f0e27d5fb704da49b002cdea8fa3c31e9b5f604e37': 'NODE-014',
 };
 
 // Verified snapshots of the real on-chain state (2026-08-30). Used when live reads fail.
 const SNAPSHOTS = {
+  '0x978ccb4f3bed8e0e496bfa524173f0a7e4190e9c9d1dfa712d1ae14e4e793251': {
+    label: 'NODE-010 · v1 · 10 windows · settled FULL',
+    deviceId: '0x4346f6bcde52779e60d0cba2808558c173f47e10545e5ad50f4e32a19d2eebff',
+    createTx: '0x06e27d67eababe824be98f2941e060670d03c452b53234f642ac7bb359b05cab',
+    submitTx: '0xecb9973fd1efd1492389a3f80950a0eab3a744a9318d9d9ed45fbaa0276ff2fa',
+    settleTx: '0xbfcc3362f11365d78df31da75a299be01321799931b09eb38fb4eb9781d80967',
+    sla: { required: 10, minUptime: 9800, reward: '40000000000000000000', collateral: '100000000000000000000', verified: 10, passed: 10, lastVerified: 9, settled: true },
+    outcome: 1,
+    windows: [
+      { windowId: 0, uptimeBps: 9850, tx: '0x5ff4b825c8d1b67c855e57f83452e3b3557f0fcca2db94e4329e3ebcebed3996', block: 11602226 },
+      { windowId: 1, uptimeBps: 9900, tx: '0x7306985d7e6de98c67e86c63414f9ff30dd70bc53ea6378e8875296806eb213c', block: 11602228 },
+      { windowId: 2, uptimeBps: 9920, tx: '0xc867df4545bab4d1d07d413c44fd94ff297b5126573dbb8f360ea913093f4f80', block: 11602230 },
+      { windowId: 3, uptimeBps: 9880, tx: '0x19278c28b3a67d1081a623de8fde5a7b48a2576fa50ebb521f5626a846c3b743', block: 11602232 },
+      { windowId: 4, uptimeBps: 9950, tx: '0x417594447a01567ac54894be3d6d4794a4648c7beffb4616a71ce1b4aae3269c', block: 11602234 },
+      { windowId: 5, uptimeBps: 9840, tx: '0xabbdd5e0a5bba940c16ce4f2873c0eb4e1c98fae0162d8297b92dfd6d8defa7c', block: 11602236 },
+      { windowId: 6, uptimeBps: 9890, tx: '0xa20bd5d2ca33a23a097c3bb03c13460038bdea30d2a89ae46730616aceee344e', block: 11602238 },
+      { windowId: 7, uptimeBps: 9930, tx: '0x134fc53aca71b7cb820d1945be0100e4ce005f7017678323ff8bfe1e116edf68', block: 11602241 },
+      { windowId: 8, uptimeBps: 9860, tx: '0xa6f6096e3150a090624878660aa9c48500df67235304e617b395e09ca65ddc69', block: 11602243 },
+      { windowId: 9, uptimeBps: 9910, tx: '0x04dc5388a3a7cab24600819555748a7839a413d5ca416cc605b771f7d22fb625', block: 11602245 },
+    ],
+    verified: [
+      { windowId: 0, uptimeBps: 9850, passed: true },
+      { windowId: 1, uptimeBps: 9900, passed: true },
+      { windowId: 2, uptimeBps: 9920, passed: true },
+      { windowId: 3, uptimeBps: 9880, passed: true },
+      { windowId: 4, uptimeBps: 9950, passed: true },
+      { windowId: 5, uptimeBps: 9840, passed: true },
+      { windowId: 6, uptimeBps: 9890, passed: true },
+      { windowId: 7, uptimeBps: 9930, passed: true },
+      { windowId: 8, uptimeBps: 9860, passed: true },
+      { windowId: 9, uptimeBps: 9910, passed: true },
+    ],
+    gasUsed: '673145',
+  },
   '0xe20e839b522db9d322b6ca76b7ba68e3d5c3d667ec514d344a848f2070f2b2c8': {
     label: 'NODE-015 · v1 · settled FULL',
     deviceId: '0x025c01e087c57af0174f8f75090f0ba0e03a03f01a33ce086db83c99d3d01c8a',
@@ -597,8 +632,8 @@ async function fetchLive(slaId) {
     settler.slas(slaId),
     settler.outcomes(slaId),
     src.getLogs({ address: CONFIG.srcReg, topics: [swcTopic], fromBlock: CONFIG.fromBlock, toBlock: 'latest' }),
-    cc.getLogs({ address: CONFIG.settle, topics: [wvTopic, slaId], fromBlock: 0, toBlock: 'latest' }),
-    cc.getLogs({ address: CONFIG.settle, topics: [stTopic, slaId], fromBlock: 0, toBlock: 'latest' }),
+    cc.getLogs({ address: CONFIG.settle, topics: [wvTopic, slaId], fromBlock: CONFIG.fromBlock, toBlock: 'latest' }),
+    cc.getLogs({ address: CONFIG.settle, topics: [stTopic, slaId], fromBlock: CONFIG.fromBlock, toBlock: 'latest' }),
   ]);
 
   if (slaTuple[0] === ethers.ZeroHash) throw new Error('SLA not found on chain');
